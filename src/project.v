@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2024 Your Name
+ * Copyright (c) 2024 Rishikesh Sethuraman
  * SPDX-License-Identifier: Apache-2.0
  */
 
 `default_nettype none
 
-module tt_um_example (
+module tt_um_pipeline_skid_buffer (
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
     input  wire [7:0] uio_in,   // IOs: Input path
@@ -16,12 +16,27 @@ module tt_um_example (
     input  wire       rst_n     // reset_n - low to reset
 );
 
-  // All output pins must be assigned. If not used, assign to 0.
-  assign uo_out  = ui_in + uio_in;  // Example: ou_out is the sum of ui_in and uio_in
-  assign uio_out = 0;
-  assign uio_oe  = 0;
+  localparam GATE_DATA = 1;
+  localparam RESET_DATA = 0;
+
+  pipeline_skid_buffer #(
+    .datapath_gate_p(GATE_DATA), 
+    .datapath_reset_p(RESET_DATA)
+  ) skid_buffer (
+    .clk_i(clk),
+    .reset_i(~rst_n),
+    .ready_o(uio_out[2]),
+    .valid_i(uio_in[1]),
+    .data_i(ui_in),
+    .ready_i(uio_in[0]),
+    .valid_o(uio_out[3]),
+    .data_o(uo_out)
+  );
+
+  assign uio_oe = 8'b00001100;
+  assign {uio_out[1:0], uio_out[7:4]} = 6'b0;
 
   // List all unused inputs to prevent warnings
-  wire _unused = &{ena, clk, rst_n, 1'b0};
+  wire _unused = &{ena, uio_in[7:2], 1'b0};
 
 endmodule
