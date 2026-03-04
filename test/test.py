@@ -7,6 +7,9 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 async def initialise(dut):
+    # cocotb 2.0 cancels background coroutines between tests, so the clock
+    # must be restarted each time. There is no multiple-driver conflict because
+    # the previous Clock coroutine is already gone before this test runs.
     cocotb.start_soon(Clock(dut.clk, 10, unit='ns').start())
     dut.rst_n.value  = 0
     dut.ui_in.value  = 0
@@ -243,3 +246,4 @@ async def test_random_stress(dut):
                 f"(in: data=0x{data_i:02X} valid_i={valid_i} ready_i={ready_i})"
 
     dut._log.info(f"  {total} cycles: {total - mismatches} passed, {mismatches} mismatches")
+    
