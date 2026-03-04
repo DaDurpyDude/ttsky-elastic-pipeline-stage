@@ -13,11 +13,9 @@ module pipeline_skid_buffer
 
   (input clk_i
   ,input reset_i
-
   ,output ready_o
   ,input valid_i
   ,input [7:0] data_i 
-
   ,input ready_i
   ,output valid_o 
   ,output [7:0] data_o 
