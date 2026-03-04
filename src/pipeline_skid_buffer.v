@@ -1,7 +1,7 @@
 `default_nettype none
 
 module pipeline_skid_buffer
-  #(parameter datapath_gate_p  = 0
+  #(parameter datapath_gate_p = 1
    ,parameter datapath_reset_p = 0
    )
   ( input  wire       clk_i
