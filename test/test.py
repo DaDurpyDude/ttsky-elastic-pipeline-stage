@@ -7,15 +7,22 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 async def initialise(dut):
-    # cocotb 2.0 cancels background coroutines between tests, so the clock
-    # must be restarted each time. There is no multiple-driver conflict because
-    # the previous Clock coroutine is already gone before this test runs.
     cocotb.start_soon(Clock(dut.clk, 10, unit='ns').start())
     dut.rst_n.value  = 0
     dut.ui_in.value  = 0
     dut.uio_in.value = 0
     await ClockCycles(dut.clk, 5)
-    dut.rst_n.value  = 1
+    
+    # FIX 1: Release reset at a FALLING edge, not coincident with a rising edge.
+    # This gives a full half-period before the next rising edge for the async
+    # reset deassert to propagate cleanly through sky130 gate cells.
+    await FallingEdge(dut.clk)
+    dut.rst_n.value = 1
+    
+    # FIX 2: Wait 2 complete cycles after reset release before reading anything.
+    # One cycle for FFs to latch the post-reset state; one more for GL
+    # combinational paths (ready_o, valid_o) to fully settle.
+    await ClockCycles(dut.clk, 2)
     await FallingEdge(dut.clk)
 
 
@@ -27,8 +34,20 @@ def drive_inputs(dut, data, valid, ready_in):
 def read_outputs(dut):
     data_o  = dut.uo_out.value.to_unsigned() & 0xFF if dut.uo_out.value.is_resolvable else 0
     uio_val = dut.uio_out.value.to_unsigned()        if dut.uio_out.value.is_resolvable else 0
-    return data_o, (uio_val >> 3) & 1, (uio_val >> 2) & 1
-
+    
+    # FIX 3: If full word is unresolvable, try reading individual bits directly.
+    # In GL sim, unused bits can briefly carry X while driven bits are valid.
+    if not dut.uio_out.value.is_resolvable:
+        try:
+            valid_o = int(dut.uio_out[3].value)
+            ready_o = int(dut.uio_out[2].value)
+        except Exception:
+            valid_o, ready_o = 0, 0
+    else:
+        valid_o = (uio_val >> 3) & 1
+        ready_o = (uio_val >> 2) & 1
+    
+    return data_o, valid_o, ready_o
 
 def log_cycle(dut, cycle, data_i, valid_i, ready_i, data_o, valid_o, ready_o,
               exp_data=None, exp_valid=None, exp_ready=None):
