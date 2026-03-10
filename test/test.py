@@ -4,34 +4,26 @@
 import random
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles, Timer
-
-# Sample 7ns after the rising edge (clock period = 10ns).
-# This allows all multi-level sky130 combinational paths (UNIT_DELAY=#1 per gate)
-# to fully settle before we read, while staying well clear of the next rising edge.
-SAMPLE_DELAY_NS = 7
-
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 async def initialise(dut):
-    # cocotb 2.0 cancels background coroutines between tests, so the clock
-    # must be restarted each time.
     cocotb.start_soon(Clock(dut.clk, 10, unit='ns').start())
     dut.rst_n.value  = 0
     dut.ui_in.value  = 0
     dut.uio_in.value = 0
-
-    # Hold reset for 5 rising edges, then deassert at the FALLING edge so that
-    # reset release is never coincident with a rising edge. This avoids violating
-    # the sky130 FF reset-recovery time constraint which causes X-propagation in
-    # GL simulation.
     await ClockCycles(dut.clk, 5)
+    
+    # FIX 1: Release reset at a FALLING edge, not coincident with a rising edge.
+    # This gives a full half-period before the next rising edge for the async
+    # reset deassert to propagate cleanly through sky130 gate cells.
     await FallingEdge(dut.clk)
     dut.rst_n.value = 1
-
-    # Wait 2 full cycles after reset release for FF state to propagate through
-    # the design, then settle at our standard sample point.
+    
+    # FIX 2: Wait 2 complete cycles after reset release before reading anything.
+    # One cycle for FFs to latch the post-reset state; one more for GL
+    # combinational paths (ready_o, valid_o) to fully settle.
     await ClockCycles(dut.clk, 2)
-    await Timer(SAMPLE_DELAY_NS, unit='ns')
+    await FallingEdge(dut.clk)
 
 
 def drive_inputs(dut, data, valid, ready_in):
@@ -40,22 +32,22 @@ def drive_inputs(dut, data, valid, ready_in):
 
 
 def read_outputs(dut):
-    # Read data_o byte — safe to use is_resolvable on uo_out as all 8 bits
-    # are driven by the skid buffer's data_o.
-    data_o = dut.uo_out.value.to_unsigned() & 0xFF if dut.uo_out.value.is_resolvable else 0
-
-    # BinaryValue.binstr is stored MSB-first: "b7 b6 b5 b4 b3 b2 b1 b0".
-    # Hardware bit N = binstr[-(N+1)] (index from the right end).
-    #   valid_o = hardware bit 3 = binstr[-4]
-    #   ready_o = hardware bit 2 = binstr[-3]
-    # This correctly maps hardware bit positions and handles X/Z on the
-    # unused uio_out bits ([1:0] and [7:4]) without any whole-word check.
-    binstr = str(dut.uio_out.value)
-    valid_o = 0 if binstr[-4] in ('x', 'X', 'z', 'Z') else int(binstr[-4])
-    ready_o = 0 if binstr[-3] in ('x', 'X', 'z', 'Z') else int(binstr[-3])
-
+    data_o  = dut.uo_out.value.to_unsigned() & 0xFF if dut.uo_out.value.is_resolvable else 0
+    uio_val = dut.uio_out.value.to_unsigned()        if dut.uio_out.value.is_resolvable else 0
+    
+    # FIX 3: If full word is unresolvable, try reading individual bits directly.
+    # In GL sim, unused bits can briefly carry X while driven bits are valid.
+    if not dut.uio_out.value.is_resolvable:
+        try:
+            valid_o = int(dut.uio_out[3].value)
+            ready_o = int(dut.uio_out[2].value)
+        except Exception:
+            valid_o, ready_o = 0, 0
+    else:
+        valid_o = (uio_val >> 3) & 1
+        ready_o = (uio_val >> 2) & 1
+    
     return data_o, valid_o, ready_o
-
 
 def log_cycle(dut, cycle, data_i, valid_i, ready_i, data_o, valid_o, ready_o,
               exp_data=None, exp_valid=None, exp_ready=None):
@@ -117,24 +109,16 @@ async def test_reset_while_full(dut):
 
     drive_inputs(dut, fill_data, valid=1, ready_in=0)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, unit='ns')
+    await FallingEdge(dut.clk)
     data_o, valid_o, _ = read_outputs(dut)
     dut._log.info(f"  After fill  | data_o=0x{data_o:02X} valid_o={valid_o}")
     assert valid_o == 1 and data_o == fill_data, \
         f"Buffer did not fill — valid_o={valid_o} data_o=0x{data_o:02X}"
 
-    # Clear inputs before asserting reset so that valid_i=0 during and after
-    # reset release. Without this, valid_i=1 left over from the fill step
-    # immediately re-fills the buffer on the first rising edge after reset
-    # deasserts (ready_pre goes high as soon as valid_l clears).
-    drive_inputs(dut, 0, valid=0, ready_in=0)
-    await FallingEdge(dut.clk)
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 3)
-    await FallingEdge(dut.clk)
     dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 2)
-    await Timer(SAMPLE_DELAY_NS, unit='ns')
+    await FallingEdge(dut.clk)
 
     data_o, valid_o, ready_o = read_outputs(dut)
     dut._log.info(f"  After reset | data_o=0x{data_o:02X} valid_o={valid_o} ready_o={ready_o}")
@@ -153,7 +137,7 @@ async def test_single_transfer(dut):
 
     drive_inputs(dut, test_data, valid=1, ready_in=1)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, unit='ns')
+    await FallingEdge(dut.clk)
 
     data_o, valid_o, ready_o       = read_outputs(dut)
     exp_data, exp_valid, exp_ready = ref.step(test_data, valid_i=1, ready_i=1)
@@ -172,7 +156,7 @@ async def test_multiple_transfers(dut):
     for i, d in enumerate(test_data):
         drive_inputs(dut, d, valid=1, ready_in=1)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, unit='ns')
+        await FallingEdge(dut.clk)
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(d, 1, 1)
         log_cycle(dut, i + 1, d, 1, 1, data_o, valid_o, ready_o, exp_data, exp_valid, exp_ready)
@@ -196,7 +180,7 @@ async def test_backpressure(dut):
         dut._log.info(f"  Cycle {cycle}: {note}")
         drive_inputs(dut, data, valid=valid, ready_in=ready)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, unit='ns')
+        await FallingEdge(dut.clk)
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(data, valid, ready)
         log_cycle(dut, cycle, data, valid, ready, data_o, valid_o, ready_o,
@@ -213,13 +197,13 @@ async def test_backpressure_extended(dut):
 
     drive_inputs(dut, fill_data, valid=1, ready_in=0)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, unit='ns')
+    await FallingEdge(dut.clk)
     ref.step(fill_data, 1, 0)
 
     for i, d in enumerate([0x66, 0x77, 0x88], start=1):
         drive_inputs(dut, d, valid=1, ready_in=0)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, unit='ns')
+        await FallingEdge(dut.clk)
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(d, 1, 0)
         log_cycle(dut, i, d, 1, 0, data_o, valid_o, ready_o, exp_data, exp_valid, exp_ready)
@@ -231,7 +215,7 @@ async def test_backpressure_extended(dut):
     release_data = 0x99
     drive_inputs(dut, release_data, valid=1, ready_in=1)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, unit='ns')
+    await FallingEdge(dut.clk)
     data_o, valid_o, ready_o       = read_outputs(dut)
     exp_data, exp_valid, exp_ready = ref.step(release_data, 1, 1)
     log_cycle(dut, 4, release_data, 1, 1, data_o, valid_o, ready_o, exp_data, exp_valid, exp_ready)
@@ -256,7 +240,7 @@ async def test_random_stress(dut):
 
         drive_inputs(dut, data_i, valid_i, ready_i)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, unit='ns')
+        await FallingEdge(dut.clk)
 
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(data_i, valid_i, ready_i)
