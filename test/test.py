@@ -9,6 +9,7 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 async def initialise(dut):
     cocotb.start_soon(Clock(dut.clk, 10, unit='ns').start())
     dut.rst_n.value  = 0
+    dut.ena.value    = 1
     dut.ui_in.value  = 0
     dut.uio_in.value = 0
     await ClockCycles(dut.clk, 5)
