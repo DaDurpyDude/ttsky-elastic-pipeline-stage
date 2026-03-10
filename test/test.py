@@ -31,7 +31,7 @@ async def initialise(dut):
     # Wait 2 full cycles after reset release for FF state to propagate through
     # the design, then settle at our standard sample point.
     await ClockCycles(dut.clk, 2)
-    await Timer(SAMPLE_DELAY_NS, units='ns')
+    await Timer(SAMPLE_DELAY_NS, unit='ns')
 
 
 def drive_inputs(dut, data, valid, ready_in):
@@ -44,18 +44,21 @@ def read_outputs(dut):
     # are driven by the skid buffer's data_o.
     data_o = dut.uo_out.value.to_unsigned() & 0xFF if dut.uo_out.value.is_resolvable else 0
 
-    # Read valid_o and ready_o as INDIVIDUAL BITS rather than the whole uio_out
-    # byte. After synthesis the unused uio_out bits ([1:0] and [7:4]) may be
+    # Read valid_o and ready_o by slicing the BinaryValue directly.
+    # cocotb 2.0 does not allow indexing packed handles (dut.uio_out[N]),
+    # but does allow indexing a BinaryValue object (handle.value[N]).
+    # After synthesis the unused uio_out bits ([1:0] and [7:4]) may be
     # left undriven (X/Z) by the optimizer. A single X bit anywhere in the byte
     # causes is_resolvable to return False for the entire word, silently making
-    # both signals read as 0. Reading bit-by-bit bypasses those undriven bits.
+    # both signals read as 0. Slicing only bits [3] and [2] bypasses this.
+    uio_val = dut.uio_out.value
     try:
-        valid_o = int(dut.uio_out[3].value)
+        valid_o = int(uio_val[3])
     except ValueError:
         valid_o = 0
 
     try:
-        ready_o = int(dut.uio_out[2].value)
+        ready_o = int(uio_val[2])
     except ValueError:
         ready_o = 0
 
@@ -122,7 +125,7 @@ async def test_reset_while_full(dut):
 
     drive_inputs(dut, fill_data, valid=1, ready_in=0)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, units='ns')
+    await Timer(SAMPLE_DELAY_NS, unit='ns')
     data_o, valid_o, _ = read_outputs(dut)
     dut._log.info(f"  After fill  | data_o=0x{data_o:02X} valid_o={valid_o}")
     assert valid_o == 1 and data_o == fill_data, \
@@ -135,7 +138,7 @@ async def test_reset_while_full(dut):
     await FallingEdge(dut.clk)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 2)
-    await Timer(SAMPLE_DELAY_NS, units='ns')
+    await Timer(SAMPLE_DELAY_NS, unit='ns')
 
     data_o, valid_o, ready_o = read_outputs(dut)
     dut._log.info(f"  After reset | data_o=0x{data_o:02X} valid_o={valid_o} ready_o={ready_o}")
@@ -154,7 +157,7 @@ async def test_single_transfer(dut):
 
     drive_inputs(dut, test_data, valid=1, ready_in=1)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, units='ns')
+    await Timer(SAMPLE_DELAY_NS, unit='ns')
 
     data_o, valid_o, ready_o       = read_outputs(dut)
     exp_data, exp_valid, exp_ready = ref.step(test_data, valid_i=1, ready_i=1)
@@ -173,7 +176,7 @@ async def test_multiple_transfers(dut):
     for i, d in enumerate(test_data):
         drive_inputs(dut, d, valid=1, ready_in=1)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, units='ns')
+        await Timer(SAMPLE_DELAY_NS, unit='ns')
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(d, 1, 1)
         log_cycle(dut, i + 1, d, 1, 1, data_o, valid_o, ready_o, exp_data, exp_valid, exp_ready)
@@ -197,7 +200,7 @@ async def test_backpressure(dut):
         dut._log.info(f"  Cycle {cycle}: {note}")
         drive_inputs(dut, data, valid=valid, ready_in=ready)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, units='ns')
+        await Timer(SAMPLE_DELAY_NS, unit='ns')
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(data, valid, ready)
         log_cycle(dut, cycle, data, valid, ready, data_o, valid_o, ready_o,
@@ -214,13 +217,13 @@ async def test_backpressure_extended(dut):
 
     drive_inputs(dut, fill_data, valid=1, ready_in=0)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, units='ns')
+    await Timer(SAMPLE_DELAY_NS, unit='ns')
     ref.step(fill_data, 1, 0)
 
     for i, d in enumerate([0x66, 0x77, 0x88], start=1):
         drive_inputs(dut, d, valid=1, ready_in=0)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, units='ns')
+        await Timer(SAMPLE_DELAY_NS, unit='ns')
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(d, 1, 0)
         log_cycle(dut, i, d, 1, 0, data_o, valid_o, ready_o, exp_data, exp_valid, exp_ready)
@@ -232,7 +235,7 @@ async def test_backpressure_extended(dut):
     release_data = 0x99
     drive_inputs(dut, release_data, valid=1, ready_in=1)
     await RisingEdge(dut.clk)
-    await Timer(SAMPLE_DELAY_NS, units='ns')
+    await Timer(SAMPLE_DELAY_NS, unit='ns')
     data_o, valid_o, ready_o       = read_outputs(dut)
     exp_data, exp_valid, exp_ready = ref.step(release_data, 1, 1)
     log_cycle(dut, 4, release_data, 1, 1, data_o, valid_o, ready_o, exp_data, exp_valid, exp_ready)
@@ -257,7 +260,7 @@ async def test_random_stress(dut):
 
         drive_inputs(dut, data_i, valid_i, ready_i)
         await RisingEdge(dut.clk)
-        await Timer(SAMPLE_DELAY_NS, units='ns')
+        await Timer(SAMPLE_DELAY_NS, unit='ns')
 
         data_o, valid_o, ready_o       = read_outputs(dut)
         exp_data, exp_valid, exp_ready = ref.step(data_i, valid_i, ready_i)
