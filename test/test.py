@@ -44,6 +44,7 @@ def read_outputs(dut):
     # are driven by the skid buffer's data_o.
     data_o = dut.uo_out.value.to_unsigned() & 0xFF if dut.uo_out.value.is_resolvable else 0
 
+<<<<<<< HEAD
     # BinaryValue.binstr is stored MSB-first: "b7 b6 b5 b4 b3 b2 b1 b0".
     # Hardware bit N = binstr[-(N+1)] (index from the right end).
     #   valid_o = hardware bit 3 = binstr[-4]
@@ -53,6 +54,25 @@ def read_outputs(dut):
     binstr = str(dut.uio_out.value)
     valid_o = 0 if binstr[-4] in ('x', 'X', 'z', 'Z') else int(binstr[-4])
     ready_o = 0 if binstr[-3] in ('x', 'X', 'z', 'Z') else int(binstr[-3])
+=======
+    # Read valid_o and ready_o by slicing the BinaryValue directly.
+    # cocotb 2.0 does not allow indexing packed handles (dut.uio_out[N]),
+    # but does allow indexing a BinaryValue object (handle.value[N]).
+    # After synthesis the unused uio_out bits ([1:0] and [7:4]) may be
+    # left undriven (X/Z) by the optimizer. A single X bit anywhere in the byte
+    # causes is_resolvable to return False for the entire word, silently making
+    # both signals read as 0. Slicing only bits [3] and [2] bypasses this.
+    uio_val = dut.uio_out.value
+    try:
+        valid_o = int(uio_val[3])
+    except ValueError:
+        valid_o = 0
+
+    try:
+        ready_o = int(uio_val[2])
+    except ValueError:
+        ready_o = 0
+>>>>>>> e58f7905007dac0932209e9929264300ca0ac4ea
 
     return data_o, valid_o, ready_o
 
@@ -123,11 +143,15 @@ async def test_reset_while_full(dut):
     assert valid_o == 1 and data_o == fill_data, \
         f"Buffer did not fill — valid_o={valid_o} data_o=0x{data_o:02X}"
 
+<<<<<<< HEAD
     # Clear inputs before asserting reset so that valid_i=0 during and after
     # reset release. Without this, valid_i=1 left over from the fill step
     # immediately re-fills the buffer on the first rising edge after reset
     # deasserts (ready_pre goes high as soon as valid_l clears).
     drive_inputs(dut, 0, valid=0, ready_in=0)
+=======
+    # Deassert reset at a falling edge to avoid the recovery-time race.
+>>>>>>> e58f7905007dac0932209e9929264300ca0ac4ea
     await FallingEdge(dut.clk)
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 3)
@@ -281,4 +305,3 @@ async def test_random_stress(dut):
                 f"(in: data=0x{data_i:02X} valid_i={valid_i} ready_i={ready_i})"
 
     dut._log.info(f"  {total} cycles: {total - mismatches} passed, {mismatches} mismatches")
-    
